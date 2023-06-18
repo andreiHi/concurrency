@@ -3,9 +3,12 @@ package course.concurrency.m2_async.cf.min_price;
 import java.util.*;
 import java.util.concurrent.*;
 
+import static java.util.stream.Collectors.toList;
+
 public class PriceAggregator {
 
     private PriceRetriever priceRetriever = new PriceRetriever();
+    private ExecutorService executor = Executors.newCachedThreadPool();
 
     public void setPriceRetriever(PriceRetriever priceRetriever) {
         this.priceRetriever = priceRetriever;
@@ -18,25 +21,22 @@ public class PriceAggregator {
     }
 
     public double getMinPrice(long itemId) {
-        ExecutorService executorService = Executors.newCachedThreadPool();
-        List<CompletableFuture<Void>> list = new ArrayList<>();
-        List<Double> result = new CopyOnWriteArrayList<>();
-        shopIds.stream().parallel().forEach(shopId -> {
-                CompletableFuture<Void> future = CompletableFuture.supplyAsync(() -> priceRetriever.getPrice(itemId, shopId), executorService)
-                        .thenAccept(result::add).exceptionally(ex -> {
-                            System.out.println(ex.getMessage());
-                            return null;
-                        });
-                list.add(future);
-        });
-        try {
-            CompletableFuture.allOf(list.toArray(new CompletableFuture[0]))
-                    .get(2950, TimeUnit.MILLISECONDS);
-        } catch (Exception e) {
-        }
-        if (result.isEmpty()) {
-            return Double.NaN;
-        }
-        return result.stream().min(Comparator.comparing(Double::valueOf)).orElse(Double.NaN);
+               List<CompletableFuture<Double>> completableFutureList =
+                              shopIds.stream().map(shopId ->
+                                              CompletableFuture.supplyAsync(
+                                                            () -> priceRetriever.getPrice(itemId, shopId), executor)
+                                                           .completeOnTimeout(Double.POSITIVE_INFINITY, 2900, TimeUnit.MILLISECONDS)
+                                                    .exceptionally(ex -> Double.POSITIVE_INFINITY))
+                               .collect(toList());
+
+                        CompletableFuture
+                                .allOf(completableFutureList.toArray(CompletableFuture[]::new))
+                               .join();
+
+                       return completableFutureList.stream()
+                                .mapToDouble(CompletableFuture::join)
+                                .filter(Double::isFinite)
+                                .min()
+                                .orElse(Double.NaN);
     }
 }
